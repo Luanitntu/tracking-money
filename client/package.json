@@ -1,0 +1,33 @@
+{
+  "name": "vue-subscription-tracker",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.8.4",
+    "chart.js": "^3.9.1",
+    "pinia": "^3.0.1",
+    "validator": "^13.15.0",
+    "vue": "^3.5.13",
+    "vue-chart-3": "^3.1.8",
+    "vue-multiselect": "^3.2.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
+    "@tailwindcss/postcss": "^4.1.4",
+    "@vitejs/plugin-vue": "^5.2.3",
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "@vue/eslint-config-typescript": "^14.5.0",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^4.1.4",
+    "typescript": "^5.3.3",
+    "vite": "^6.2.4",
+    "vite-plugin-vue-devtools": "^7.7.2"
+  }
+}
