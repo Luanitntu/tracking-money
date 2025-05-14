@@ -1,0 +1,195 @@
+<?php
+
+if (!function_exists('create_webhook_log_table')) {
+    /**
+     * Tạo bảng log webhook trong database.
+     *
+     * @return void
+     */
+    function create_webhook_log_table(): void {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'webhook_logs';
+        $charset_collate = $wpdb->get_charset_collate();
+
+        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+            id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            action VARCHAR(50) NOT NULL,
+            user_id BIGINT(20) UNSIGNED,
+            webhook_url VARCHAR(255),
+            request_payload LONGTEXT,
+            response_code INT,
+            response_body LONGTEXT,
+            retry_count TINYINT UNSIGNED DEFAULT 0,
+            status VARCHAR(20),
+            message TEXT,
+            INDEX user_id (user_id)
+        ) $charset_collate;";
+
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        dbDelta($sql);
+    }
+}
+add_action('init', 'create_webhook_log_table');
+
+if (!function_exists('log_webhook_event')) {
+    /**
+     * Ghi log một sự kiện webhook.
+     *
+     * @param string      $action         Hành động CRUD.
+     * @param int|null    $user_id        ID của người dùng (nếu có).
+     * @param string|null $webhook_url    URL webhook đích.
+     * @param array|null  $request_payload Payload đã gửi.
+     * @param int|null    $response_code  Mã phản hồi HTTP (nếu có).
+     * @param string|null $response_body  Body phản hồi (nếu có).
+     * @param int         $retry_count    Số lần thử lại.
+     * @param string      $status         Trạng thái ('success', 'failed', 'retrying').
+     * @param string|null $message        Thông báo chi tiết.
+     * @return void
+     */
+    function log_webhook_event(
+        string $action,
+        ?int $user_id = null,
+        ?string $webhook_url = null,
+        ?array $request_payload = null,
+        ?int $response_code = null,
+        ?string $response_body = null,
+        int $retry_count = 0,
+        string $status = '',
+        ?string $message = null
+    ): void {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'webhook_logs';
+
+        $data = [
+            'action' => $action,
+            'user_id' => $user_id,
+            'webhook_url' => $webhook_url,
+            'request_payload' => wp_json_encode($request_payload),
+            'response_code' => $response_code,
+            'response_body' => $response_body,
+            'retry_count' => $retry_count,
+            'status' => $status,
+            'message' => $message,
+        ];
+
+        $format = [
+            '%s',
+            '%d',
+            '%s',
+            '%s',
+            '%d',
+            '%s',
+            '%d',
+            '%s',
+            '%s',
+        ];
+
+        $wpdb->insert($table_name, $data, $format);
+    }
+}
+
+if (!function_exists('send_user_data_to_nestjs')) {
+    /**
+     * Gửi dữ liệu người dùng (CRUD) đến ứng dụng NestJS thông qua webhook.
+     *
+     * @param int    $user_id    ID của người dùng.
+     * @param string $action     Hành động CRUD ('created', 'updated', 'deleted').
+     * @return void
+     */
+    function send_user_data_to_nestjs(int $user_id, string $action): void {
+        $nestjs_webhook_url = 'https://webhook.site/b99936e3-c362-4f85-8534-db1748557b46'; // **QUAN TRỌNG:** Thay thế bằng URL webhook NestJS của bạn
+        $retry_count = 0;
+        $max_retries = 5;
+        $retry_interval_seconds = 60;
+
+        $user_data = get_userdata($user_id);
+
+        if (!$user_data) {
+            $error_message = "Không tìm thấy dữ liệu người dùng với ID: " . $user_id;
+            error_log($error_message);
+            log_webhook_event($action, $user_id, $nestjs_webhook_url, null, null, null, 0, 'failed', $error_message);
+            return;
+        }
+
+        $payload = [
+            'action' => $action,
+            'user' => [
+                'ID' => $user_data->ID,
+                'user_login' => $user_data->user_login,
+                'user_email' => $user_data->user_email,
+                'display_name' => $user_data->display_name,
+                // Thêm các trường dữ liệu người dùng khác bạn muốn gửi nếu cần
+            ],
+        ];
+
+        $headers = [
+            'Content-Type: application/json',
+        ];
+
+        $args = [
+            'method' => 'POST',
+            'headers' => $headers,
+            'body' => wp_json_encode($payload),
+            'timeout' => 10, // Thời gian chờ tối đa cho mỗi request (giây)
+        ];
+
+        while ($retry_count < $max_retries) {
+            $response = wp_remote_post($nestjs_webhook_url, $args);
+
+            if (is_wp_error($response)) {
+                $error_message = "Lỗi gửi webhook lần " . ($retry_count + 1) . ": " . $response->get_error_message();
+                error_log($error_message);
+                log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, null, null, $retry_count + 1, 'failed', $error_message);
+                $retry_count++;
+                if ($retry_count < $max_retries) {
+                    sleep($retry_interval_seconds);
+                    error_log("Thử lại sau " . $retry_interval_seconds . " giây...");
+                    log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, null, null, $retry_count, 'retrying', "Thử lại lần " . ($retry_count + 1));
+                } else {
+                    $final_error_message = "Gửi webhook thất bại sau " . $max_retries . " lần thử.";
+                    error_log($final_error_message);
+                    log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, null, null, $retry_count, 'failed', $final_error_message);
+                }
+            } else {
+                $response_code = wp_remote_retrieve_response_code($response);
+                $response_body = wp_remote_retrieve_body($response);
+
+                if ($response_code >= 200 && $response_code < 300) {
+                    $success_message = "Webhook gửi thành công. Response Code: " . $response_code . ", Body: " . $response_body;
+                    error_log($success_message);
+                    log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, $response_code, $response_body, $retry_count, 'success', $success_message);
+                    break; // Thoát khỏi vòng lặp retry nếu thành công
+                } else {
+                    $error_message = "Webhook gửi không thành công. Response Code: " . $response_code . ", Body: " . $response_body;
+                    error_log($error_message);
+                    log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, $response_code, $response_body, $retry_count + 1, 'failed', $error_message);
+                    $retry_count++;
+                    if ($retry_count < $max_retries) {
+                        sleep($retry_interval_seconds);
+                        error_log("Thử lại sau " . $retry_interval_seconds . " giây...");
+                        log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, $response_code, $response_body, $retry_count, 'retrying', "Thử lại lần " . ($retry_count + 1));
+                    } else {
+                        $final_error_message = "Gửi webhook thất bại sau " . $max_retries . " lần thử.";
+                        error_log($final_error_message);
+                        log_webhook_event($action, $user_id, $nestjs_webhook_url, $payload, $response_code, $response_body, $retry_count, 'failed', $final_error_message);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Hook vào các hành động CRUD người dùng
+add_action('user_register', function ($user_id) {
+    send_user_data_to_nestjs($user_id, 'created');
+});
+
+add_action('profile_update', function ($user_id) {
+    send_user_data_to_nestjs($user_id, 'updated');
+});
+add_action('delete_user', function ($user_id) {
+    send_user_data_to_nestjs($user_id, 'deleted');
+});
+
+// **QUAN TRỌNG:** Thay thế 'YOUR_NESTJS_WEBHOOK_URL' bằng URL webhook thực tế của bạn.
